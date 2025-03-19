@@ -1,7 +1,9 @@
+import subprocess
 from flask import Flask, request, jsonify, render_template, redirect, url_for, flash, session, Response
+from flask_migrate import Migrate
 from datetime import datetime, timedelta
 from pytz import timezone, utc
-from models import db, Log, Alert, Rule, Agent  # Ensure Agent model is imported
+from models import db, Log, Alert, Rule, Agent
 import psutil
 import json
 import time
@@ -19,6 +21,7 @@ app = Flask(__name__)
 app.config.from_object('config.Config')
 app.secret_key = 'your_secret_key'  # Replace with your own secret key
 db.init_app(app)
+migrate = Migrate(app, db)  # Initialize Flask-Migrate
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -55,7 +58,7 @@ rules = [
     {
         "id": 4,
         "name": "High CPU Usage",
-        "condition": '{"event_type": "process_start", "cpu_usage": {"gt": 30}}',
+        "condition": '{"event_type": "process_creation", "cpu_usage": {"gt": 30}}',
         "severity": "medium"
     },
     {
@@ -127,7 +130,7 @@ rules = [
 ]
 
 # Initialize the RuleEngine with the list of rules
-rule_engine = RuleEngine(rules)
+rule_engine = RuleEngine(rules, debug=False)  # Set debug to False to reduce verbosity
 
 def parse_datetime(datetime_str):
     return datetime.fromisoformat(datetime_str)
@@ -184,22 +187,52 @@ def logout():
 
 @app.route('/disconnect_agent', methods=['POST'])
 def disconnect_agent():
-    # Remove this check
-    # if 'logged_in' not in session:
-    #     return jsonify({"status": "error", "message": "Unauthorized"}), 401
-
+    logging.debug("Disconnect agent endpoint hit")
     data = request.json
-    agent_id = data.get('agent_id')
+    hostname = data.get('hostname')  # Fetching hostname from request
+    logging.debug(f"Received hostname: {hostname}")
 
-    if not agent_id:
-        return jsonify({"status": "error", "message": "Agent ID is required"}), 400
+    if not hostname:
+        return jsonify({"status": "error", "message": "Hostname is required"}), 400
 
-    agent = Agent.query.get(agent_id)
+    agent = Agent.query.filter_by(hostname=hostname).first()
     if agent:
         agent.status = "disconnected"
         db.session.commit()
-        return jsonify({"status": "success", "message": f"Agent {agent_id} disconnected"}), 200
+        logging.debug(f"Agent {hostname} disconnected")
+
+        # Block incoming and outgoing traffic using Windows Firewall
+        subprocess.run(f'netsh advfirewall firewall add rule name="Block {hostname}" dir=in action=block remoteip=any', shell=True)
+        subprocess.run(f'netsh advfirewall firewall add rule name="Block {hostname}" dir=out action=block remoteip=any', shell=True)
+
+        return jsonify({"status": "success", "message": f"Agent {hostname} disconnected"}), 200
     else:
+        logging.debug("Agent not found")
+        return jsonify({"status": "error", "message": "Agent not found"}), 404
+
+@app.route('/reconnect_agent', methods=['POST'])
+def reconnect_agent():
+    logging.debug("Reconnect agent endpoint hit")
+    data = request.json
+    hostname = data.get('hostname')  # Fetching hostname from request
+    logging.debug(f"Received hostname: {hostname}")
+
+    if not hostname:
+        return jsonify({"status": "error", "message": "Hostname is required"}), 400
+
+    agent = Agent.query.filter_by(hostname=hostname).first()
+    if agent:
+        agent.status = "connected"
+        db.session.commit()
+        logging.debug(f"Agent {hostname} reconnected")
+
+        # Unblock incoming and outgoing traffic using Windows Firewall
+        subprocess.run(f'netsh advfirewall firewall delete rule name="Block {hostname}" dir=in', shell=True)
+        subprocess.run(f'netsh advfirewall firewall delete rule name="Block {hostname}" dir=out', shell=True)
+
+        return jsonify({"status": "success", "message": f"Agent {hostname} reconnected"}), 200
+    else:
+        logging.debug("Agent not found")
         return jsonify({"status": "error", "message": "Agent not found"}), 404
 
 @app.route('/logs')

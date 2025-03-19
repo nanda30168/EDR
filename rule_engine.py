@@ -2,14 +2,16 @@ import json
 import logging
 
 class RuleEngine:
-    def __init__(self, rules):
+    def __init__(self, rules, debug=False):
         self.rules = rules  # Rules should be a list of objects with a 'condition' attribute
+        self.debug = debug
 
     def evaluate(self, log_entry):
         alerts = []
         for rule in self.rules:
             condition = json.loads(rule['condition']) if isinstance(rule['condition'], str) else rule['condition']
-            logging.debug(f"Evaluating rule: {rule['name']} with condition: {condition}")
+            if self.debug:
+                logging.debug(f"Evaluating rule: {rule['name']} with condition: {condition}")
             if self.evaluate_condition(log_entry, condition):
                 logging.debug(f"Rule triggered: {rule['name']}")
                 alerts.append(self.create_alert(log_entry, rule))
@@ -19,7 +21,7 @@ class RuleEngine:
         """ Evaluates the condition against a log entry """
         for key, value in condition.items():
             if key == "gt":  # Handle greater-than condition
-                if log_entry.get('cpu_usage') <= value:
+                if key in log_entry and log_entry[key] <= value:
                     return False
             elif log_entry.get(key) != value:
                 return False
